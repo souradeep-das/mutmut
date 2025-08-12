@@ -80,6 +80,7 @@ status_by_exit_code = {
     24: 'timeout',  # SIGXCPU
     152: 'timeout',  # SIGXCPU
     255: 'timeout',
+    -9: 'timeout',
     -11: 'segfault',
 }
 
@@ -371,7 +372,12 @@ class PytestRunner(TestRunner):
     # noinspection PyMethodMayBeStatic
     def execute_pytest(self, params: list[str], **kwargs):
         import pytest
-        params += ['--rootdir=.']
+
+        mutants_src = os.path.abspath("src")
+        print(f"Setting PYTHONPATH to: {mutants_src}", file=sys.__stdout__)
+        os.environ['PYTHONPATH'] = "src"
+
+        params += ['-m', 'not angry_mutant', '--rootdir=.']
         if mutmut.config.debug:
             params = ['-vv'] + params
             print('python -m pytest ', ' '.join(params))
@@ -397,16 +403,34 @@ class PytestRunner(TestRunner):
 
         stats_collector = StatsCollector()
 
+        pytest_args = ['-x', '-q']
+        if tests:
+            pytest_args += list(tests)
+        else:
+            tests_dir = mutmut.config.tests_dir
+            if tests_dir:
+                pytest_args += tests_dir
         with change_cwd('mutants'):
-            return int(self.execute_pytest(['-x', '-q'] + list(tests), plugins=[stats_collector]))
+            return int(self.execute_pytest(pytest_args, plugins=[stats_collector]))
 
     def run_tests(self, *, mutant_name, tests):
+        pytest_args = ['-x', '-q']
+        if tests:
+            pytest_args += list(tests)
+        else:
+            tests_dir = mutmut.config.tests_dir
+            if tests_dir:
+                pytest_args += tests_dir
         with change_cwd('mutants'):
-            return int(self.execute_pytest(['-x', '-q'] + list(tests)))
+            return int(self.execute_pytest(pytest_args))
 
     def run_forced_fail(self):
+        pytest_args = ['-x', '-q']
+        tests_dir = mutmut.config.tests_dir
+        if tests_dir:
+            pytest_args += tests_dir
         with change_cwd('mutants'):
-            return int(self.execute_pytest(['-x', '-q']))
+            return int(self.execute_pytest(pytest_args))
 
     def list_all_tests(self):
         class TestsCollector:
@@ -415,8 +439,13 @@ class PytestRunner(TestRunner):
 
         collector = TestsCollector()
 
+        tests_dir = mutmut.config.tests_dir
+        pytest_args = ['-x', '-q', '--collect-only']
+        if tests_dir:
+            pytest_args += tests_dir
+
         with change_cwd('mutants'):
-            exit_code = int(self.execute_pytest(['-x', '-q', '--collect-only'], plugins=[collector]))
+            exit_code = int(self.execute_pytest(pytest_args, plugins=[collector]))
             if exit_code != 0:
                 raise CollectTestsFailedException()
 
@@ -620,6 +649,7 @@ class Config:
     max_stack_depth: int
     debug: bool
     paths_to_mutate: List[Path]
+    tests_dir: List[str] = None
 
     def should_ignore_for_mutation(self, path):
         if not str(path).endswith('.py'):
@@ -698,7 +728,8 @@ def load_config():
         paths_to_mutate=[
             Path(y)
             for y in s('paths_to_mutate', [])
-        ] or guess_paths_to_mutate()
+        ] or guess_paths_to_mutate(),
+        tests_dir=s('tests_dir', []),
     )
 
 
@@ -870,9 +901,9 @@ def timeout_checker(mutants):
             for m, mutant_name, result in mutants:
                 for pid, start_time in m.start_time_by_pid.items():
                     run_time = now - start_time
-                    if run_time.total_seconds() > (m.estimated_time_of_tests_by_mutant[mutant_name] + 1) * 4:
+                    if run_time.total_seconds() > mutmut.stats_time * 2:
                         try:
-                            os.kill(pid, signal.SIGXCPU)
+                            os.kill(pid, signal.SIGKILL)
                         except ProcessLookupError:
                             pass
     return inner_timout_checker
@@ -935,6 +966,7 @@ def _run(mutant_names: Union[tuple, list], max_children: Union[None, int]):
     os.environ['MUTANT_UNDER_TEST'] = ''
     with CatchOutput(spinner_title='Running clean tests') as output_catcher:
         tests = tests_for_mutant_names(mutant_names)
+        print(f"Running clean tests with the following test nodeids:\n{sorted(tests)}")
 
         clean_test_exit_code = runner.run_tests(mutant_name=None, tests=tests)
         if clean_test_exit_code != 0:
@@ -988,12 +1020,13 @@ def _run(mutant_names: Union[tuple, list], max_children: Union[None, int]):
                 continue
 
             tests = mutmut.tests_by_mangled_function_name.get(mangled_name_from_mutant_name(mutant_name), [])
+            print(f"Tests to run for mutant {mutant_name}: {sorted(tests)}")
 
             # print(tests)
-            if not tests:
-                m.exit_code_by_key[mutant_name] = 33
-                m.save()
-                continue
+            # if not tests:
+            #     m.exit_code_by_key[mutant_name] = 33
+            #     m.save()
+            #     continue
 
             pid = os.fork()
             if not pid:
@@ -1002,16 +1035,16 @@ def _run(mutant_names: Union[tuple, list], max_children: Union[None, int]):
                 setproctitle(f'mutmut: {mutant_name}')
 
                 # Run fast tests first
-                tests = sorted(tests, key=lambda test_name: mutmut.duration_by_test[test_name])
-                if not tests:
-                    os._exit(33)
+                # tests = sorted(tests, key=lambda test_name: mutmut.duration_by_test[test_name])
+                # if not tests:
+                #     os._exit(33)
 
                 estimated_time_of_tests = m.estimated_time_of_tests_by_mutant[mutant_name]
-                cpu_time_limit = ceil((estimated_time_of_tests + 1) * 2 + process_time()) * 10
-                resource.setrlimit(resource.RLIMIT_CPU, (cpu_time_limit, cpu_time_limit))
+                # cpu_time_limit = ceil((estimated_time_of_tests + 1) * 2 + process_time()) * 10
+                # resource.setrlimit(resource.RLIMIT_CPU, (cpu_time_limit, cpu_time_limit))
 
                 with CatchOutput():
-                    result = runner.run_tests(mutant_name=mutant_name, tests=tests)
+                    result = runner.run_tests(mutant_name=mutant_name, tests=[])
 
                 if result != 0:
                     # TODO: write failure information to stdout?
