@@ -6,7 +6,7 @@ import itertools
 import json
 from multiprocessing import Pool, set_start_method
 import os
-import resource
+import shlex
 import shutil
 import signal
 import subprocess
@@ -377,7 +377,7 @@ class PytestRunner(TestRunner):
         print(f"Setting PYTHONPATH to: {mutants_src}", file=sys.__stdout__)
         os.environ['PYTHONPATH'] = "src"
 
-        params += ['-m', 'not angry_mutant', '--rootdir=.']
+        params += ['--rootdir=.']
         if mutmut.config.debug:
             params = ['-vv'] + params
             print('python -m pytest ', ' '.join(params))
@@ -404,6 +404,8 @@ class PytestRunner(TestRunner):
         stats_collector = StatsCollector()
 
         pytest_args = ['-x', '-q']
+        if mutmut.config.pytest_extra_args:
+            pytest_args += mutmut.config.pytest_extra_args
         if tests:
             pytest_args += list(tests)
         else:
@@ -415,6 +417,8 @@ class PytestRunner(TestRunner):
 
     def run_tests(self, *, mutant_name, tests):
         pytest_args = ['-x', '-q']
+        if mutmut.config.pytest_extra_args:
+            pytest_args += mutmut.config.pytest_extra_args
         if tests:
             pytest_args += list(tests)
         else:
@@ -426,6 +430,8 @@ class PytestRunner(TestRunner):
 
     def run_forced_fail(self):
         pytest_args = ['-x', '-q']
+        if mutmut.config.pytest_extra_args:
+            pytest_args += mutmut.config.pytest_extra_args
         tests_dir = mutmut.config.tests_dir
         if tests_dir:
             pytest_args += tests_dir
@@ -441,6 +447,8 @@ class PytestRunner(TestRunner):
 
         tests_dir = mutmut.config.tests_dir
         pytest_args = ['-x', '-q', '--collect-only']
+        if mutmut.config.pytest_extra_args:
+            pytest_args += mutmut.config.pytest_extra_args
         if tests_dir:
             pytest_args += tests_dir
 
@@ -650,6 +658,7 @@ class Config:
     debug: bool
     paths_to_mutate: List[Path]
     tests_dir: List[str] = None
+    pytest_extra_args: List[str] = None
 
     def should_ignore_for_mutation(self, path):
         if not str(path).endswith('.py'):
@@ -739,6 +748,7 @@ def load_config(cli_overrides=None):
             for y in s('paths_to_mutate', [])
         ] or guess_paths_to_mutate(),
         tests_dir=s('tests_dir', []),
+        pytest_extra_args=s('pytest_extra_args', []),
     )
 
 
@@ -748,8 +758,9 @@ def load_config(cli_overrides=None):
 @click.option('--debug', is_flag=True, help='Enable debug mode')
 @click.option('--paths-to-mutate', multiple=True, help='Paths to mutate')
 @click.option('--tests-dir', multiple=True, help='Directory with tests')
+@click.option('--pytest-extra-args', multiple=True, help='Extra arguments to pass to pytest')
 @click.pass_context
-def cli(ctx, debug, paths_to_mutate, tests_dir):
+def cli(ctx, debug, paths_to_mutate, tests_dir, pytest_extra_args):
     ctx.ensure_object(dict)
 
     cli_overrides = {}
@@ -772,6 +783,17 @@ def cli(ctx, debug, paths_to_mutate, tests_dir):
             else:
                 split_tests.append(test_dir)
         cli_overrides['tests_dir'] = split_tests
+    if pytest_extra_args:
+        # Support comma-separated values and space-separated values for pytest args
+        split_pytest_args = []
+        for arg in pytest_extra_args:
+            if ',' in arg:
+                split_pytest_args.extend(a.strip() for a in arg.split(','))
+            elif ' ' in arg:
+                split_pytest_args.extend(shlex.split(arg))
+            else:
+                split_pytest_args.append(arg)
+        cli_overrides['pytest_extra_args'] = split_pytest_args
 
     ctx.obj['cli_overrides'] = cli_overrides
 
