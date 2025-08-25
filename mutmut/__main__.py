@@ -961,7 +961,7 @@ def timeout_checker(mutants):
             for m, mutant_name, result in mutants:
                 for pid, start_time in m.start_time_by_pid.items():
                     run_time = now - start_time
-                    if run_time.total_seconds() > mutmut.stats_time * 2:
+                    if run_time.total_seconds() > mutmut.stats_time * 4:
                         try:
                             os.kill(pid, signal.SIGKILL)
                         except ProcessLookupError:
